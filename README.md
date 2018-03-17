@@ -1,4 +1,4 @@
-#amqp-lite
+# amqp-lite
 Opinionated, clean interface for publishing/consuming RabbitMQ channels.
 
 # Install
