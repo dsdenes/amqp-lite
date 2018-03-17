@@ -3,6 +3,7 @@
   "engines": {
     "node": ">=8.9.4"
   },
+  "repository": "https://github.com/dsdenes/amqp-lite",
   "name": "amqp-lite",
   "version": "1.0.1",
   "main": "index.js",
