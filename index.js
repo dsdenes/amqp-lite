@@ -48,9 +48,9 @@ module.exports = function(_config = {}) {
     return _channel;
   }
 
-  function getChannel() {
+  function getChannel(queueName) {
     if (channel === null) {
-      channel = assertChannel();
+      channel = assertChannel(queueName);
     }
     return channel;
   }
