@@ -1,89 +1,81 @@
-const amqp = require('amqplib');
-let connection = null;
-let channel = null;
-const debug = require('debug')(`amqp-lite:debug`);
-const info = require('debug')(`amqp-lite:info`);
-const error = require('debug')(`amqp-lite:error`);
+const amqp = require('amqplib')
+const memoize = require('lodash.memoize')
+const debug = require('debug')(`amqp-lite:debug`)
+const info = require('debug')(`amqp-lite:info`)
+const error = require('debug')(`amqp-lite:error`)
 
-module.exports = function(_config = {}) {
-  const config = Object.assign({
+module.exports = function (config = {}) {
+  config = Object.assign({
     connectionUrl: null,
-    prefetch: null,
-  }, _config);
+    prefetch: null
+  }, config)
+
+  async function connect () {
+    info(`Connecting to: ${config.connectionUrl}`)
+    const connection = await (config.connectionUrl === null ? amqp.connect() : amqp.connect(config.connectionUrl))
+    info(`Connected to: ${config.connectionUrl}`)
+    process.once('SIGINT', connection.close.bind(connection))
+    connection.on('close', () => {
+      error(`Connection closed.`)
+      connection = null
+    })
+
+    return connection
+  }
+  const getConnection = memoize(connect)
+
+  async function assertChannel (queueName) {
+    const connection = await getConnection()
+    const channel = await connection.createChannel()
+    await channel.assertQueue(queueName, {
+      durable: true
+    })
+    if (config.prefetch !== null) {
+      await channel.prefetch(config.prefetch)
+    }
+    return channel
+  }
+
+  const getChannel = memoize(assertChannel)
+
+  async function publish (queueName, payload) {
+    const encodedPayload = JSON.stringify(payload)
+    const channel = await getChannel(queueName)
+    debug(`PUBLISH [${queueName}]: ${Buffer.from(encodedPayload).toString()}`)
+    return channel.sendToQueue(queueName, Buffer.from(encodedPayload))
+  }
+
+  async function consume (queueName, consumer) {
+    const channel = await getChannel(queueName)
+    const consumingResult = await channel.consume(queueName, async msg => {
+      if (msg !== null) {
+        debug(`CONSUME [${queueName}:${msg.fields.deliveryTag}]: ${msg.content.toString()}`)
+        try {
+          const content = JSON.parse(msg.content.toString())
+          await consumer(content)
+          debug(`ACK ${msg.fields.deliveryTag}`)
+          await channel.ack(msg)
+        } catch (err) {
+          await channel.nack(msg)
+          throw err
+        }
+      }
+    })
+    info(`Consuming at: ${queueName}`)
+
+    return () => {
+      channel.cancel(consumingResult.consumerTag)
+    }
+  }
+
+  async function close () {
+    const connection = await getConnection()
+    connection.close()
+  }
 
   return Object.freeze({
     publish,
     consume,
-  });
-
-  async function connect() {
-    info(`Connecting to: ${config.connectionUrl}`);
-    const _connection = await (config.connectionUrl === null ? amqp.connect() : amqp.connect(config.connectionUrl));
-    info(`Connected to: ${config.connectionUrl}`);
-    process.once('SIGINT', _connection.close.bind(_connection));
-    _connection.on('close', err => {
-      error(`Connection closed.`);
-      connection = null;
-    });
-
-    return _connection;
-  }
-
-  function getConnection() {
-    if (connection === null) {
-      connection = connect();
-    }
-    return connection;
-  }
-
-  async function assertChannel(queueName) {
-    const _connection = await getConnection();
-    const _channel = await _connection.createChannel();
-    await _channel.assertQueue(queueName, {
-      durable: true,
-    });
-    if (config.prefetch !== null) {
-      await _channel.prefetch(config.prefetch);
-    }
-    return _channel;
-  }
-
-  function getChannel(queueName) {
-    if (channel === null) {
-      channel = assertChannel(queueName);
-    }
-    return channel;
-  }
-
-  async function publish(queueName, payload) {
-    const channel = await getChannel(queueName);
-    debug(`PUBLISH [${queueName}]: ${new Buffer(payload).toString()}`);
-    return channel.sendToQueue(queueName, new Buffer(payload));
-  }
-
-  async function consume(queueName, consumer) {
-    const channel = await getChannel(queueName);
-    const consumingResult = await channel.consume(queueName, async msg => {
-      if (msg !== null) {
-        debug(`CONSUME [${queueName}:${msg.fields.deliveryTag}]: ${msg.content.toString()}`);
-        try {
-          await consumer(msg.content.toString());
-          debug(`ACK ${msg.fields.deliveryTag}`);
-          await channel.ack(msg);
-        } catch (err) {
-          await channel.nack(msg);
-          throw err;
-        }
-      }
-    });
-    info(`Consuming on: ${queueName}`);
-    return getCancelConsume(channel, consumingResult.consumerTag);
-  }
-
-  function getCancelConsume(channel, consumerTag) {
-    return () => {
-      return channel.cancel(consumerTag);
-    }
-  }
-};
-
+    close
+  })
+}
